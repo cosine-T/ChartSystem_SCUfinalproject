@@ -54,6 +54,35 @@ public class MonitorFrame extends JFrame implements WindowProvider {
     // 血压波形长度
     private static final int BP_BEAT_LENGTH = 125;
 
+    // —— ECG 模拟常量 —— //
+    private static final double ECG_NOISE_STD = 0.02;
+    private static final double[] ECG_THETA = {-70, -15, 0, 15, 100};
+    private static final double[] ECG_SIGMA = {15, 5, 3, 7, 20};
+    private static final double[] ECG_AMP   = {0.2, -0.15, 1.2, -0.25, 0.35};
+
+    // —— BP 模拟常量 —— //
+    private static final double BP_NOISE_STD      = 0.6;
+    private static final double BP_BEAT_RISE_THRESHOLD = 0.25;
+    private static final double BP_RISE_BASE      = 80;
+    private static final double BP_RISE_AMPLITUDE = 45;
+    private static final double BP_DECAY_BASE     = 75;
+    private static final double BP_DECAY_AMPLITUDE = 45;
+    private static final double BP_DECAY_WIDTH     = 0.6;
+
+    // —— RESP 模拟常量 —— //
+    private static final double RESP_AMPLITUDE = 1.2;
+    private static final double RESP_NOISE_STD = 0.05;
+
+    // —— SpO2 模拟常量 —— //
+    private static final double SPO2_LOW_BASE    = 88.0;
+    private static final double SPO2_NORMAL_BASE = 98.0;
+    private static final double SPO2_NOISE_STD   = 0.3;
+
+    // —— 其他模拟常量 —— //
+    private static final int CAPACITY_GROWTH_FACTOR = 2;
+
+
+
     // GUI 文本
     private static final String LABEL_TIME_ZOOM = "Time Zoom";
     private static final String BTN_EXPORT_TXT  = "导出 TXT";
@@ -238,16 +267,16 @@ public class MonitorFrame extends JFrame implements WindowProvider {
         private volatile boolean running = true;
         private final Random rnd = new Random();
 
-        private long sampleIdx    = 0;
-        private double bpm        = 75;
-        private int spo2LowCnt    = 0;
+        private long sampleIdx = 0;
+        private double bpm = 75;
+        private int spo2LowCnt = 0;
 
-        private final double[] theta = {-70, -15, 0, 15, 100};
-        private final double[] sigma = {15,   5,  3,  7,  20};
-        private final double[] amp   = {0.2, -0.15, 1.2, -0.25, 0.35};
+        private final double[] theta = ECG_THETA;
+        private final double[] sigma = ECG_SIGMA;
+        private final double[] amp = ECG_AMP;
 
         private final double[] bpBeat = buildBpBeat();
-        private int bpPtr   = 0;
+        private int bpPtr = 0;
         private int respPtr = 0;
 
         @Override
@@ -257,7 +286,6 @@ public class MonitorFrame extends JFrame implements WindowProvider {
                     sleepSilently(PAUSE_SLEEP_MS);
                     continue;
                 }
-                // 周期性更新心率
                 if (sampleIdx % BPM_UPDATE_INTERVAL == 0) {
                     bpm = 60 + rnd.nextDouble() * 30;
                 }
@@ -265,41 +293,41 @@ public class MonitorFrame extends JFrame implements WindowProvider {
                 ensureCapacity((int) sampleIdx + 1);
                 int idx = (int) sampleIdx;
 
-                // ECG 合成
+                // ECG
                 double phase = (sampleIdx % FS) * 360.0 / FS;
-                double ecg   = 0;
+                double ecg = 0;
                 for (int i = 0; i < theta.length; i++) {
                     double d = angleDiff(phase, theta[i]);
-                    ecg += amp[i] * Math.exp(-0.5 * d*d / (sigma[i]*sigma[i]));
+                    ecg += amp[i] * Math.exp(-0.5 * d * d / (sigma[i] * sigma[i]));
                 }
-                ecg += rnd.nextGaussian() * 0.02;
+                ecg += rnd.nextGaussian() * ECG_NOISE_STD;
                 channels.get(0).getData()[idx] = ecg;
 
-                // BP 波形
+                // BP
                 double[] bpArr = channels.get(1).getData();
                 bpArr[idx] = (sampleIdx % 2 == 0)
-                        ? bpBeat[bpPtr++] + rnd.nextGaussian() * 0.6
+                        ? bpBeat[bpPtr++] + rnd.nextGaussian() * BP_NOISE_STD
                         : bpArr[idx - 1];
                 bpPtr %= bpBeat.length;
 
-                // RESP 波形
+                // RESP
                 double[] rsp = channels.get(3).getData();
                 rsp[idx] = (sampleIdx % RESP_SAMPLE_PERIOD == 0)
-                        ? 1.2 * Math.sin(2 * Math.PI * respPtr++ / BP_BEAT_LENGTH)
-                        + rnd.nextGaussian() * 0.05
+                        ? RESP_AMPLITUDE * Math.sin(2 * Math.PI * respPtr++ / BP_BEAT_LENGTH)
+                        + rnd.nextGaussian() * RESP_NOISE_STD
                         : rsp[idx - 1];
                 respPtr %= BP_BEAT_LENGTH;
 
-                // SpO2 波形
+                // SpO2
                 if (spo2LowCnt > 0) {
                     spo2LowCnt--;
                 } else if (sampleIdx % SPO2_LOW_INTERVAL == 0) {
                     spo2LowCnt = SPO2_LOW_DURATION;
                 }
-                double base = (spo2LowCnt > 0) ? 88 : 98;
+                double base = (spo2LowCnt > 0) ? SPO2_LOW_BASE : SPO2_NORMAL_BASE;
                 double[] spo = channels.get(2).getData();
                 spo[idx] = (sampleIdx % SPO2_SAMPLE_PERIOD == 0)
-                        ? base + rnd.nextGaussian() * 0.3
+                        ? base + rnd.nextGaussian() * SPO2_NOISE_STD
                         : spo[idx - 1];
 
                 sampleIdx++;
@@ -314,22 +342,20 @@ public class MonitorFrame extends JFrame implements WindowProvider {
             running = false;
         }
 
-        /** 角度差值 */
         private double angleDiff(double a, double b) {
             double d = a - b;
-            if (d > 180)  d -= 360;
+            if (d > 180) d -= 360;
             if (d < -180) d += 360;
             return d;
         }
 
-        /** 动态扩容，容量每次翻倍 */
         private void ensureCapacity(int need) {
             int cap = channels.get(0).getData().length;
             if (need <= cap) return;
 
             int newCap = cap;
             while (newCap < need) {
-                newCap *= 2;
+                newCap *= CAPACITY_GROWTH_FACTOR;
             }
             for (ChannelData ch : channels) {
                 double[] neo = Arrays.copyOf(ch.getData(), newCap);
@@ -352,14 +378,13 @@ public class MonitorFrame extends JFrame implements WindowProvider {
             } catch (InterruptedException ignored) {}
         }
 
-        /** 构建 BP 心跳波形 */
         private double[] buildBpBeat() {
             double[] w = new double[BP_BEAT_LENGTH];
             for (int i = 0; i < BP_BEAT_LENGTH; i++) {
                 double t = i / (double) BP_BEAT_LENGTH;
-                w[i] = (t < 0.25)
-                        ? 80 + 45 * Math.sin(Math.PI * t / 0.25)
-                        : 75 + 45 * Math.exp(-(t - 0.25) / 0.6);
+                w[i] = (t < BP_BEAT_RISE_THRESHOLD)
+                        ? BP_RISE_BASE + BP_RISE_AMPLITUDE * Math.sin(Math.PI * t / BP_BEAT_RISE_THRESHOLD)
+                        : BP_DECAY_BASE + BP_DECAY_AMPLITUDE * Math.exp(-(t - BP_BEAT_RISE_THRESHOLD) / BP_DECAY_WIDTH);
             }
             return w;
         }
